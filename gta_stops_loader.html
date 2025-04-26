@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Transitland Map Clone with Save Feature</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    #saveButton {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 1;
+      background: white;
+      padding: 8px 12px;
+      font-size: 14px;
+      border: 1px solid #ccc;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <button id="saveButton">Save JSON</button>
+  <div id="stopCount" style="position:absolute; top:50px; left:10px; background:white; padding:6px 12px; font-size:14px; border:1px solid #ccc;">
+    Stops saved: 0
+  </div>
+
+
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <script>
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) {
+      const url = args[0];
+      if (typeof url === 'string' && url.includes('transit.land/api/v2/tiles')) {
+        const match = url.match(/tiles\/(\d+)\/(\d+)\/(\d+)/);
+        if (match) {
+          const [, z, x, y] = match;
+          console.log(`[TILE FETCH] z=${z} x=${x} y=${y}`);
+        }
+      }
+      return originalFetch.apply(this, args);
+    };
+
+    const apiKey = 'lMNcYoNfIkNezw0488GgygZapjrgNOjF';
+
+    const gtaCoords = [
+      [-79.85, 43.6],
+      [-79.65, 43.48],
+      [-79.08, 43.76],
+      [-79.118, 43.794],
+      [-79.148, 43.817],
+      [-79.285, 44.136],
+      [-79.65, 44.06],
+      [-79.6, 43.86],
+      [-79.7, 43.86],
+      [-79.88, 43.7],
+      [-79.85, 43.6]
+    ];
+
+    const gtaBounds = {
+      type: 'Polygon',
+      coordinates: [gtaCoords]
+    };
+
+    const blackoutMask = {
+      type: 'Feature',
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [-180, -85],
+          [180, -85],
+          [180, 85],
+          [-180, 85],
+          [-180, -85]
+        ], gtaCoords.slice().reverse()]
+      }
+    };
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          blackout: {
+            type: 'geojson',
+            data: blackoutMask
+          },
+          background: {
+            type: 'raster',
+            tiles: [
+              'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+            ],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors'
+          },
+          routes: {
+            type: 'vector',
+            tiles: [
+              `https://transit.land/api/v2/tiles/routes/tiles/{z}/{x}/{y}.pbf?apikey=${apiKey}`
+            ],
+            minzoom: 14,
+            maxzoom: 14
+          },
+          stops: {
+            type: 'vector',
+            tiles: [
+              `https://transit.land/api/v2/tiles/stops/tiles/{z}/{x}/{y}.pbf?apikey=${apiKey}`
+            ],
+            minzoom: 14,
+            maxzoom: 14
+          },
+          stopsBuffer: {
+            type: 'geojson',
+            data: {
+              type: 'FeatureCollection',
+              features: []
+            }
+          }
+        },
+        layers: [
+          {
+            id: 'background',
+            type: 'raster',
+            source: 'background'
+          },
+          {
+            id: 'routes',
+            type: 'line',
+            source: 'routes',
+            'source-layer': 'routes',
+            filter: [
+              'in',
+              ['get', 'agency_name'],
+              ['literal', ['TTC', 'York Region Transit', 'GO Transit', 'Brampton Transit', 'MiWay']]
+            ],
+            layout: {
+              'line-cap': 'round',
+              'line-join': 'round'
+            },
+            paint: {
+              'line-width': 4,
+              'line-color': [
+                'case',
+                ['all',
+                  ['==', ['get', 'agency_id'], 'TTC'],
+                  ['==', ['slice', ['get', 'route_short_name'], 0, 1], '5'],
+                  ['!=', ['slice', ['get', 'route_short_name'], 1, 2], ''],
+                  ['!=', ['slice', ['get', 'route_short_name'], 2, 3], ''],
+                  ['==', ['slice', ['get', 'route_short_name'], 3, 4], '']
+                ], '#ff0000',
+                ['all', ['==', ['get', 'agency_name'], 'TTC'], ['==', ['get', 'route_short_name'], '1']], '#ffff00',
+                ['all', ['==', ['get', 'agency_name'], 'TTC'], ['==', ['get', 'route_short_name'], '2']], '#00cc00',
+                ['all', ['==', ['get', 'agency_name'], 'TTC'], ['==', ['get', 'route_short_name'], '4']], '#800080',
+                ['==', ['slice', ['get', 'route_long_name'], 0, 4], 'VIVA'], '#00008b',
+                ['==', ['get', 'agency_name'], 'York Region Transit'], '#87cefa',
+                ['==', ['get', 'agency_name'], 'GO Transit'], '#006400',
+                ['==', ['get', 'agency_name'], 'Brampton Transit'], '#5dd99f',
+                ['==', ['get', 'agency_name'], 'MiWay'], '#fabb87',
+                '#ff6666'
+              ]
+            }
+          },
+          {
+            id: 'stops-buffer-fill',
+            type: 'fill',
+            source: 'stopsBuffer',
+            paint: {
+              'fill-color': '#0066ff',
+              'fill-opacity': 0.1
+            }
+          },
+          {
+            id: 'stops-dot',
+            type: 'circle',
+            source: 'stops',
+            'source-layer': 'stops',
+            filter: ['within', gtaBounds],
+            paint: {
+              'circle-radius': 5,
+              'circle-color': '#a6cee3',
+              'circle-stroke-width': 1,
+              'circle-stroke-color': '#ffffff'
+            }
+          },
+          {
+            id: 'blackout',
+            type: 'fill',
+            source: 'blackout',
+            paint: {
+              'fill-color': 'black',
+              'fill-opacity': 1
+            }
+          }
+        ]
+      },
+      center: [-79.3832, 43.6456],
+      zoom: 14
+    });
+
+    // STORAGE
+    const collectedData = {
+      stops: {},
+      routes: {}
+    };
+
+    // SAVE FUNCTION
+    document.getElementById('saveButton').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(collectedData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'transit_data.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    map.on('load', () => {
+      map.on('moveend', async () => {
+        const stops = map.queryRenderedFeatures({ layers: ['stops-dot'] });
+        const routes = map.queryRenderedFeatures({ layers: ['routes'] });
+
+        stops.forEach(feature => {
+          if (!collectedData.stops[feature.id]) {
+            collectedData.stops[feature.id] = feature;
+          }
+        });
+
+        routes.forEach(feature => {
+          if (!collectedData.routes[feature.id]) {
+            collectedData.routes[feature.id] = feature;
+          }
+        });
+        
+        document.getElementById('stopCount').innerText = `Stops saved: ${Object.keys(collectedData.stops).length}`;
+
+
+        const buffers = stops.map(stop => {
+          const lon = stop.geometry.coordinates[0];
+          const lat = stop.geometry.coordinates[1];
+          return turf.circle([lon, lat], 0.5, { steps: 64, units: 'kilometers' });
+        });
+
+        const bufferData = {
+          type: 'FeatureCollection',
+          features: buffers
+        };
+
+        map.getSource('stopsBuffer').setData(bufferData);
+      });
+
+      map.fire('moveend');
+    });
+
+    // POPUPS
+    map.on('click', (e) => {
+      const features = map.queryRenderedFeatures(e.point, {
+        layers: ['routes', 'stops-dot']
+      });
+
+      if (features.length > 0) {
+        const feature = features[0];
+        let displayName = 'Unnamed';
+
+        if (feature.layer.id === 'routes') {
+          displayName = feature.properties.agency_name + " " + feature.properties.route_long_name || feature.properties.name || 'Unnamed Route';
+        } else if (feature.layer.id.startsWith('stops')) {
+          displayName = feature.properties.stop_name || feature.properties.name || 'Unnamed Stop';
+        }
+
+        new maplibregl.Popup()
+          .setLngLat(e.lngLat)
+          .setHTML(`<strong>${displayName}</strong>`)
+          .addTo(map);
+      }
+    });
+
+    // Pointer cursor
+    ['routes', 'stops-dot'].forEach(layer => {
+      map.on('mouseenter', layer, () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', layer, () => {
+        map.getCanvas().style.cursor = '';
+      });
+    });
+
+  </script>
+</body>
+</html>
